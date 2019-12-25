@@ -7,8 +7,8 @@
 
 
 ; Replace with your application code
-.def	temp				= r16
-.def	halfByte			= r17
+.def	temp				= r16		; used as temporary storage, should not be used in interrupts, subroutines may change that value
+.def	temp2				= r17
 .def	delay_ms_overflows	= r18	
 .def	delay_ms_val		= r19
 
@@ -26,25 +26,29 @@
 	rcall delay
 .endmacro
 
-.macro sendHalfByte
-	ldi halfByte, @0				; load input into register
-	andi halfByte, 0b00001111		; as we use lower 4 bits, make sure upper ones are cleared
-	ori halfByte, lcd_e_mask		; bit for LCD Enable make high
-
-	in temp, PORTC					; copy current state of PORTC, we will copy values fr0m halfByte in temp
-	andi temp, 0b11110000			; reset bits 3:0, so we can later set what is sent in halfByte
-	or temp, halfByte				; set pins as in halfByte
-		
-	out PORTC, temp					; set pins
-	delay_us 50
-	cbi PORTC, lcd_e_pin			; reset enable pin, se data is read
-	delay_ms 50
+.macro sendHalfByteImmidiate
+	ldi temp, @0
+	push temp						; push function argument into stack
+	call sendHalfByteFunc
+	pop temp						; remove argument from 
 .endmacro
 
-.macro sendByteByParts
-	sendHalfByte @0
-	sendHalfByte @1
+.macro sendByteImmidiate
+	ldi temp, @0
+	push temp
+	call sendByteFunc
+	pop temp
 .endmacro
+
+.macro sendByteFromRAM				; receives one argument - address of RAM, the byte of which will be send to LCD
+	lds temp, @0
+	push temp
+	call sendByteFunc
+	pop temp
+
+.endmacro
+
+
 
 	.org 0x0000
 	rjmp Init
@@ -72,38 +76,39 @@ Init:
 
 	; LCD Init
 	delay_ms 15
-	sendHalfByte 0b00000011
+	sendHalfByteImmidiate 0b00000011
 	delay_ms 4
-	sendHalfByte 0b00000011
+	sendHalfByteImmidiate 0b00000011
 	delay_ms 100
-	sendHalfByte 0b00000011
+	sendHalfByteImmidiate 0b00000011
 	delay_ms 1
-	sendHalfByte 0b00000010
+	sendHalfByteImmidiate 0b00000010
 	delay_ms 1
-	sendHalfByte 0b00000010
+	sendHalfByteImmidiate 0b00000010
 	delay_ms 1
 
 	cbi PORTC, lcd_rs_pin			; we are sending commands
 
-	sendByteByParts 0b0000, 0b0000	
+	sendByteImmidiate 0b00000000	
 	delay_ms 1
-	sendByteByParts 0b0011, 0b0000
+	sendByteImmidiate 0b00110000
 	delay_ms 1
-	sendByteByParts 0b1000, 0b0000
+	sendByteImmidiate 0b10000000
 	delay_ms 1
-	sendByteByParts 0b01100, 0b1100
+	sendByteImmidiate 0b11001100
 	delay_ms 1
 
 	
 
 Main:
     sbi PORTC, lcd_rs_pin			; we are sending data
-	sendByteByParts 0b0100, 0b1111	; O
-	sendByteByParts 0b0100, 0b1100	; L
-	sendByteByParts 0b0100, 0b0101	; E
-	sendByteByParts 0b0100, 0b1011	; K
-	sendByteByParts 0b0101, 0b0011	; S
-	sendByteByParts 0b0100, 0b0001	; A
+
+	sendByteImmidiate 0b01001111	; O
+	sendByteImmidiate 0b01001100	; L
+	sendByteImmidiate 0b01000101	; E
+	sendByteImmidiate 0b01001011	; K
+	sendByteImmidiate 0b01010011	; S
+	sendByteImmidiate 0b01000001	; A
 
 loop:
 	nop
@@ -119,3 +124,59 @@ ret
 delay_ms_overflow_handler: 
 	inc delay_ms_overflows       ; increment 1000 times/sec
 reti
+
+sendHalfByteFunc:					; receives argument - byte of data bits 3:0 of which should be sent to LCD
+	; push values of register that are going to be used by subroutine into stack
+	; so that we can return them back after we are done
+
+	push r30						; keep values in register z
+	push r31						;
+
+	in r30, spl
+	in r31, sph
+
+	ldd temp2, z+5						; get argument passed to this function
+	andi temp2, 0b00001111				; as we use lower 4 bits, make sure upper ones are cleared
+	ori temp2, lcd_e_mask		; bit for LCD Enable make high
+
+	in temp, PORTC					; copy current state of PORTC, we will copy values from argument value in temp
+	andi temp, 0b11110000			; reset bits 3:0, so we can later set what is sent in halfByte
+	or temp, temp2						; set pins as in halfByte
+
+	out PORTC, temp					; set pins
+	delay_us 50
+	cbi PORTC, lcd_e_pin			; reset enable pin, LCD will read data on pins
+	delay_ms 50
+
+	; return values into register as they were before subroutine call
+	pop r31							
+	pop r30
+
+	ret
+
+sendByteFunc:
+	push r30						; keep values in register z
+	push r31
+
+	in zh, sph
+	in zl, spl
+
+	ldd temp, z+5
+	swap temp
+
+	push temp	
+	call sendHalfByteFunc
+	pop temp
+
+	swap temp
+
+	push temp
+	call sendHalfByteFunc
+	pop temp
+
+	pop r31
+	pop r30
+
+	ret
+
+
